@@ -1,5 +1,7 @@
 [package]
 name = "watfaq-dns"
+description = "A good DNS server"
+license = "MIT"
 repository = { workspace = true }
 version = { workspace = true }
 edition = { workspace = true }
