@@ -96,7 +96,7 @@ where
                     builder.build(header, m.answers(), m.name_servers(), &[], m.additionals());
 
                 if let Some(edns) = request.edns() {
-                    if edns.dnssec_ok() {
+                    if edns.flags().dnssec_ok {
                         if let Some(edns) = m.extensions() {
                             rv.set_edns(edns.clone());
                         }
@@ -209,6 +209,7 @@ where
                     DEFAULT_DNS_SERVER_TIMEOUT,
                     (server_cert, server_key),
                     c.hostname,
+                    "/dns-query".to_string(),
                 )?;
                 Ok(())
             })
@@ -290,14 +291,12 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use futures::FutureExt;
-    use hickory_client::{
-        client::{self, AsyncClient, ClientHandle},
-        proto::iocompat::AsyncIoTokioAsStd,
-    };
+    use hickory_client::client::{self, Client, ClientHandle};
     use hickory_proto::{
         h2::HttpsClientStreamBuilder,
         h3::H3ClientStreamBuilder,
         rr::{rdata::A, DNSClass, Name, RData, RecordType},
+        runtime::TokioRuntimeProvider,
         rustls::tls_client_connect,
         tcp::TcpClientStream,
         udp::UdpClientStream,
@@ -310,7 +309,7 @@ mod tests {
         DNSListenAddr, DoH3Config, DoHConfig, DoTConfig, MockDnsMessageExchanger,
     };
 
-    async fn send_query(client: &mut AsyncClient) {
+    async fn send_query(client: &mut Client) {
         // Specify the name, note the final '.' which specifies it's an FQDN
         let name = Name::from_ascii("www.example.com.").unwrap();
 
@@ -390,19 +389,25 @@ mod tests {
             listener.unwrap().await.unwrap();
         });
 
-        let stream = UdpClientStream::<TokioUdpSocket>::new("127.0.0.1:53553".parse().unwrap());
-        let (mut client, handle) = client::AsyncClient::connect(stream).await.unwrap();
+        let stream = UdpClientStream::<TokioRuntimeProvider>::builder(
+            "127.0.0.1:53553".parse().unwrap(),
+            TokioRuntimeProvider::new(),
+        )
+        .build();
+
+        let (mut client, handle) = client::Client::connect(stream).await.unwrap();
         tokio::spawn(handle);
 
         send_query(&mut client).await;
 
-        let (stream, sender) = TcpClientStream::<AsyncIoTokioAsStd<TokioTcpStream>>::new(
+        let (stream, sender) = TcpClientStream::new(
             "127.0.0.1:53554".parse().unwrap(),
+            None,
+            None,
+            TokioRuntimeProvider::new(),
         );
 
-        let (mut client, handle) = client::AsyncClient::new(stream, sender, None)
-            .await
-            .unwrap();
+        let (mut client, handle) = client::Client::new(stream, sender, None).await.unwrap();
         tokio::spawn(handle);
 
         send_query(&mut client).await;
@@ -415,14 +420,15 @@ mod tests {
             .dangerous()
             .set_certificate_verifier(Arc::new(tls::DummyTlsVerifier::new()));
 
-        let (stream, sender) = tls_client_connect::<AsyncIoTokioAsStd<TokioTcpStream>>(
+        let (stream, sender) = tls_client_connect::<TokioRuntimeProvider>(
             "127.0.0.1:53555".parse().unwrap(),
             "dns.example.com".to_owned(),
             Arc::new(tls_config),
+            TokioRuntimeProvider::new(),
         );
 
         let (mut client, handle) =
-            client::AsyncClient::with_timeout(stream, sender, Duration::from_secs(5), None)
+            client::Client::with_timeout(stream, sender, Duration::from_secs(5), None)
                 .await
                 .unwrap();
         tokio::spawn(handle);
@@ -438,13 +444,17 @@ mod tests {
             .dangerous()
             .set_certificate_verifier(Arc::new(tls::DummyTlsVerifier::new()));
 
-        let stream = HttpsClientStreamBuilder::with_client_config(Arc::new(tls_config))
-            .build::<AsyncIoTokioAsStd<TokioTcpStream>>(
+        let stream = HttpsClientStreamBuilder::with_client_config(
+            Arc::new(tls_config),
+            TokioRuntimeProvider::new(),
+        )
+        .build(
             "127.0.0.1:53556".parse().unwrap(),
             "dns.example.com".to_owned(),
+            "/dns-query".to_owned(),
         );
 
-        let (mut client, handle) = client::AsyncClient::connect(stream).await.unwrap();
+        let (mut client, handle) = client::Client::connect(stream).await.unwrap();
         tokio::spawn(handle);
 
         send_query(&mut client).await;
@@ -464,9 +474,10 @@ mod tests {
             .build(
                 "127.0.0.1:53556".parse().unwrap(),
                 "dns.example.com".to_owned(),
+                "/dns-query".to_owned(),
             );
 
-        let (mut client, handle) = client::AsyncClient::connect(stream).await.unwrap();
+        let (mut client, handle) = client::Client::connect(stream).await.unwrap();
         tokio::spawn(handle);
 
         send_query(&mut client).await;
