@@ -19,10 +19,10 @@ rustls = { version  = "0.23", default-features = false, features=["ring"] }
 rustls-pemfile = "2"
 webpki-roots = "0.26"
 
-hickory-client = "0.25.0-alpha.4"
-hickory-resolver = "0.25.0-alpha.4"
-hickory-server = { version = "0.25.0-alpha.4", features = ["dns-over-rustls", "dns-over-https-rustls", "dns-over-h3"] }
-hickory-proto = { version = "0.25.0-alpha.4", features = ["dns-over-rustls", "dns-over-https-rustls", "dns-over-h3", "dnssec-ring"]}
+hickory-client = "0.25"
+hickory-resolver = "0.25.0"
+hickory-server = { version = "0.25", features = ["https-ring", "h3-ring"] }
+hickory-proto = { version = "0.25", features = ["dnssec-ring"] }
 
 
 

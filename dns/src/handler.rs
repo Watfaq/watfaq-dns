@@ -12,10 +12,27 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
-use std::time::Duration;
+use rustls::{
+    crypto::ring::sign::any_supported_type, server::AlwaysResolvesServerRawPublicKeys,
+    sign::CertifiedKey,
+};
+use std::{sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, error, info, warn};
+
+struct CertificateKeyPair {
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+}
+
+impl Into<Arc<dyn rustls::server::ResolvesServerCert>> for CertificateKeyPair {
+    fn into(self) -> Arc<dyn rustls::server::ResolvesServerCert> {
+        Arc::new(AlwaysResolvesServerRawPublicKeys::new(Arc::new(
+            CertifiedKey::new(self.certs, any_supported_type(&self.key).unwrap()),
+        )))
+    }
+}
 
 struct DnsListener<H: RequestHandler> {
     server: ServerFuture<H>,
@@ -61,7 +78,12 @@ where
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
 
-        if request.query().query_type() == RecordType::AAAA && !self.exchanger.ipv6() {
+        let query = request
+            .queries()
+            .first()
+            .ok_or(DNSError::QueryFailed("no query".to_string()))?;
+
+        if query.query_type() == RecordType::AAAA && !self.exchanger.ipv6() {
             header.set_authoritative(true);
 
             let resp = builder.build_no_records(header);
@@ -72,7 +94,7 @@ where
         m.set_op_code(request.op_code());
         m.set_message_type(request.message_type());
         m.set_recursion_desired(request.recursion_desired());
-        m.add_query(request.query().original().clone());
+        m.add_query(query.original().clone());
         m.add_additionals(request.additionals().iter().map(Clone::clone));
         m.add_name_servers(request.name_servers().iter().map(Clone::clone));
         for sig0 in request.sig0() {
@@ -105,7 +127,7 @@ where
 
                 debug!(
                     "answering dns query {} with answer {:?}",
-                    request.query().name(),
+                    query.name(),
                     m.answers(),
                 );
 
@@ -130,10 +152,10 @@ where
         response_handle: H,
     ) -> ResponseInfo {
         debug!(
-            "got dns request [{}][{}][{}] from {}",
+            "got dns request [{}][{:?}][{:?}] from {}",
             request.protocol(),
-            request.query().query_type(),
-            request.query().name(),
+            request.queries().first().map(|x| x.query_type()),
+            request.queries().first().map(|x| x.name()),
             request.src()
         );
 
@@ -207,7 +229,11 @@ where
                 s.register_https_listener(
                     x,
                     DEFAULT_DNS_SERVER_TIMEOUT,
-                    (server_cert, server_key),
+                    CertificateKeyPair {
+                        certs: server_cert,
+                        key: server_key,
+                    }
+                    .into(),
                     c.hostname,
                     "/dns-query".to_string(),
                 )?;
@@ -235,7 +261,15 @@ where
                     .map(|x| load_cert_chain(&cwd.join(x)))
                     .transpose()?
                     .unwrap_or(load_default_cert());
-                s.register_tls_listener(x, DEFAULT_DNS_SERVER_TIMEOUT, (server_cert, server_key))?;
+                s.register_tls_listener(
+                    x,
+                    DEFAULT_DNS_SERVER_TIMEOUT,
+                    CertificateKeyPair {
+                        certs: server_cert,
+                        key: server_key,
+                    }
+                    .into(),
+                )?;
                 Ok(())
             })
             .ok()?;
@@ -264,7 +298,11 @@ where
                 s.register_h3_listener(
                     x,
                     DEFAULT_DNS_SERVER_TIMEOUT,
-                    (server_cert, server_key),
+                    CertificateKeyPair {
+                        certs: server_cert,
+                        key: server_key,
+                    }
+                    .into(),
                     c.hostname,
                 )?;
                 Ok(())
@@ -302,7 +340,6 @@ mod tests {
         udp::UdpClientStream,
     };
     use rustls::ClientConfig;
-    use tokio::net::{TcpStream as TokioTcpStream, UdpSocket as TokioUdpSocket};
 
     use crate::{
         tls::{self, global_root_store},
